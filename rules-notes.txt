@@ -1,0 +1,202 @@
+L'azione move() è disponibile solo per i modelli Movable. Movable significa solo che ha l'azione di muoversi. L'unica cosa che sa fare è spostarsi fisicamente, ma tutto quello che succede oltre a quello (oppure anche il fatto che non si deve muovere), dipende dalle altre interfacce che implementa il modello.
+
+Ci sono delle interfacce che dipendono dal movimento, cioè che hanno senso solo nei termini del movimento. Ad esempio, Solid è un modello che non si rompe se qualcuno lo spinge (cioè se cerca di muoversi nella sua posizione). Tuttavia, un Solid potrebbe non essere Movable, ad esempio un muro fisso non si muove. Una palla è Solid e Movable, per cui può muoversi, e se viene spinta non si rompe. Un muro fisso è Solid e Fixed, cioè se viene spinto non si rompe, e non può muoversi. Allora, Movable indica non tanto che ha il metodo move(), quanto che può fisicamente muoversi.
+
+Un Solid non deve sapere se è anche Movable, per cui quando qualcuno lo spinge come deve reagire? Non rompendosi. Però se è anche Movable in qualche modo bisogna anche che scatti il movimento in reazione al push. D'altro lato, un Movable non è detto che sia anche Solid, quindi non è detto che risponda a Push.
+
+Idealmente, il modello source che cerca di muoversi dovrebbe notificare il target che lui sta facendo un'azione move su di esso. Dopodiché, a seconda del target quell'azione viene interpretata in modo diverso. Se il target è Solid, quello si traduce in push, se è Fragile, si traduce in break, se è Transparent gli entra dentro, se è Magic, reagisce a seconda della qualità magica del source, ecc.
+
+Se il target è Solid, Movable e Magic, quello che succede è che non si rompe (Solid), si sposta (Movable), e uccide il player (Magic). Se ad ogni tipologia associamo una ed una azione, abbiamo: break->(Solid, Fragile), move->(Movable, Fixed), magictouch(WithAura, WithoutAura). Nell'ultimo caso non possiamo dire semplicemente Magic perché ci sono un sacco di interazioni diverse (che non hanno a che fare col movimento), che sono identificabili come Magic, per cui bisogna specificare che queste sono proprietà legate all'azione di movimento, come a dire: questo è quello che succede quando due model si muovono nella stessa posizione e hanno caratteristiche magiche. Siccome abbiamo sempre coppie di caratteristiche dicotomiche, possiamo semplificare usando uno schema di presenza/non presenza, per cui ad esempio l'azione di move su un target non lo rompe mai (evitiamo il Solid), tranne quando è Fragile (teniamo solo questa), l'azione di move su un target non lo sposta mai (evitiamo Fixed) tranne quando è Mobile. L'azione di magictouch su un target non fa mai nulla (evitiamo WithoutAura), tranne quando l'altro ha WithAura. In quest'ultimo caso, poi, bisogna anche controllare se il source è SensibleToAura.
+
+Nel metodo move del source l'unica cosa che importa è capire se il source si può muovere o no:
+
+(source è un player)
+Solid, Amagic
+  move(posTo)
+    canMove = true
+    posFrom = self.pos
+    target = geography.getModel(posTo)
+    
+    if self.is('solid')
+      if target.is('fixed')
+	canMove = false
+      if target.is('fragile')
+	canMove = false
+	target.beBroken(self)
+
+    if !target.is('fixed')
+      self.move(posTo)
+    if !target.is('incorporeal')
+      target.bePushed(self)
+    if target.is('fragile')
+      target.break()
+    
+
+    result = target.movingOver(self, posFrom)
+    if result == CAN_MOVE
+      self.move(posTo)
+
+tutti gli effetti collaterali vengono scatenati da target.movingOver()
+
+Movable
+  /**
+   * @param pos: Position
+   */
+  move(pos)
+    target = geography.getModel(pos)
+    
+      
+
+/*
+ * By default a corporeal object
+ * tryies to move when pushed
+ */
+Corporeal: Movable
+  /**
+   * @param posFrom: Position
+   */
+  push(posFrom)
+    currentPos = self.pos
+    posTo = self.geography.getOpposite(posFrom, currentPos)
+    return self.move(posTo)
+
+Blocking: Corporeal
+  /**
+   * @param posFrom: Position
+   */
+  push(posFrom)
+    return false
+
+
+
+
+
+
+<event> = {<source>, <action>, <target>}
+
+push = {physical, move, physical}
+interference = {magical, move, amagical}
+
+<effect> = |<model>, <action>|
+
+[<source>, <event>, <target>] -> (<effect>, <effect>, ...)
+[solid, push, fragile] -> (|solid, stop|, |fragile, break|)
+[movable, push, movable] -> (|movable, move|)
+[magical, interference, amagical] -> (|magical, move|, |amagical, die|)
+
+
+Approccio a componenti, come il framework JavaScript "Crafty"
+
+componente "Geo" aggiunge la posizione e i getter/setter
+componente "Mobile" aggiunge la capacità di essere mosso e spinto
+ecc..
+
+questi possono essere aggiunti/rimossi dinamicamente, ad esempio in modo che un muro inizialmente fisso diventi mobile (ad esempio grazie ad un incantesimo)
+
+inizializzazione del gioco:
+- creare oggetto player
+- assegnazione a player di Geo
+- impostazione della posizione iniziale di player
+- assegnazione a player di Mobile
+- impostazione dei listener sui keypress che causano gli eventi moveup, ecc.
+
+keypress freccia destra:
+- player ha un listener registrato su freccia destra, che chiama il suo move con posizione un passo a destra
+- Mobile.move prima di muoversi usa un metodo di tutti i model, signal(), che manda un messaggio in broadcast su tutti i componenti di quel modello, segnalando che ha intenzione di muoversi in quella posizione (ad esempio riusando l'evento move).
+- signal() controlla se ha in cache l'insieme di modelli interessati dall'evento ricevuto, altrimenti lo chiede alla geografia e lo salva in cache, associandolo a quel preciso evento, cosicché le successive chiamate a signal() fatte da altri componenti non causino una nuova chiamata a geography
+- signal() ha un insieme di componenti registrati per ogni evento (funziona come dispatcher), e quindi può chiamare i listener di ogni componente passando loro l'insieme di target e l'evento con i suoi parametri.
+- tra i vari listener di move ce n'è uno del componente Solid, che si preoccupa di capire se il modello (che è solido) viene bloccato a causa di un ostacolo fisico. Solid ascolta l'evento move, prende il target e determina se quest'ultimo è solido e fixed. In questo caso, notifica che non bisogna muoversi.
+- come fa Solid a notificare Mobile che non deve muoversi? Lancia un nuovo evento block, che viene sentito da Mobile.onBlock, il quale a sua volta salva lo stato di blocked all'interno di una sua variabile.
+- problema dei segnali contraddittori: se un player ha il componente Amagic, e il componente MagicArmor, quando incontra un'aura magica, Amagic gli segnala che deve prendersi danni, ma MagicArmor gli segnala che non deve prenderli. Come si specifica la priorità?
+
+In realtà qui stiamo ragionando a coppie di concetti. Il concetto di movimento è associato per forza di cose al concetto di block. Il concetto di armatura magica  è associato al concetto di magia. Dunque i componenti solid/fixed sono correlati al componente mobile, sanno che esiste (mentre non è detto che mobile debba sapere che esistono solid e fixed). Analogamente magic_armored sa che esiste magical (ma non è detto il contrario). Quindi abbiamo relazioni tra componenti.
+
+Quando voglio introdurre una nuova caratteristica di un modello, devo introdurre un nuovo componente che la descrive. Questo componente potrebbe dipendere da altri componenti già esistenti. Questa dipendenza si esplicita nel fatto che il componente dipendente conosce le caratteristiche di quello da cui dipende. Ad esempio, il componente fixed sa che è possibile bloccare un mobile, cioè che mobile ascolta l'evento mobile.block. Naturalmente il componente fixed sa anche che esiste l'evento mobile.move, che è quello a cui esso reagisce.
+
+Supponiamo di voler modellare il caso di un player che prende danni di tipo magici. Dovremo introdurre il concetto di danni, cioè di essere danneggiabile, in particolare dalla magia. Prima di tutto il modello avrà un componente damageable, che implementa la capacità di prendere danni (e quindi di morire). Questo è indipendente dal tipo di danni. Come influiscono nel gioco danni di tipo diverso? Dipende dalle regole, quindi non si potrà decidere nulla a priori. Ad esempio il fatto che un danno sia magico influisce sul fatto che se uno ha un'armatura magica può parare quel danno, oppure se uno ha una debolezza alla magia, prenderà più danni del normale.
+
+Poi c'è il problema di come arrivano i danni. Ci vorrà una fonte, perché ogni interazione deve avere una sorgente e dei target. Supponiamo ad esempio un danno ad area. Ci serve una sorgente, per la quale potremmo usare un modello fatto apposta, che non ha rappresentazione grafica, però ha una posizione (positioned), dato che la sorgente del danno è localizzata in un certo punto. Quando il player entra nel raggio d'azione della trappola, scatta l'interazione, che prevede che la trappola cerchi di danneggiare magicamente il player. Ma il player ha un'armatura magica, per cui in realtà non prende danni.
+
+- il player si muove (mobile) in una nuova posizione (positioned)
+- la trappola potrebbe essere ferma o muoversi. Bisogna gestire tre casi: trappola ferma, player si muove, trappola si muove, player fermo, trappola si muove, player si muove. In tutti e tre i casi deve scattare l'interazione. Siccome non possiamo fare letture ad ogni clock, bisogna che il controllo che la trappola fa di eventuali modelli presenti nel suo raggio avvenga in risposta ad un evento. Dunque dovremo fare due controlli: uno quando un modello si muove (il modello potrebbe entrare nel raggio della trappola), uno quando la trappola si muove (potrebbe entrare nel raggio del modello). In realtà, il vero controllo deve essere fatto quando le loro posizioni cambiano, e questo è un evento scontato perché entrambi devono essere positioned per ragioni concettuali. Allora ogni volta che una posizione di un modello cambia, la trappola ascolta e controlla se la posizione è interna al suo raggio, e allo stesso modo quando cambia la sua posizione. Dunque ogni volta che si verifica un positioned.relocate di chiunque (anche della stessa trappola) deve avvenire questo controllo.
+- Dunque, il player (positioned) genera un evento positioned.relocate, con l'indicazione della nuova posizione assunta.
+- La trappola è sensibile al movimento, e questo deve ovviamente essere modellato con un componente, ad esempio "radar". Dunque, la trappola (radar) rileva in generale un sacco di cambi di movimento di tutti i modelli in giro per il gioco (poi si vedrà come ottimizzare questa cosa), e per ciascuno controlla se si trova nell'area di attivazione, e se il modello è sensibile alla trappola (ad es. un muro mobile potrebbe non far scattare la trappola): questo dipenderà in generale dalle regole di gioco, perché la trappola potrebbe sparare solo ai nemici, non agli amici. Se queste condizioni sussistono, la trappola lancia un evento damageable.damage che porta con sé l'obiettivo dell'attacco (il modello interessato). Naturalmente il modello deve essere damageable perché abbia senso cercare di fargli danni. L'attacco porta con sé anche la natura dell'attacco stesso, ad esempio il fatto che il danno è magico (e magari anche di un particolare tipo di magia).
+- Ora, l'armatura magica deve stare in ascolto di damageable.damage, e intercettare l'evento prima che venga catturato dal player. A questo punto l'armatura applica la riduzione del danno (al limite lo annulla) e poi rimbalza l'evento damageable.damage che verrà catturato dal player, che subirà danni ridotti (o nessuno).
+
+Quindi abbiamo introdotto il concetto di componenti che sentono degli eventi al posto di un altro componente dipendente, e poi glielo rimandano modificato. Quanto è riusabile questo modello?
+
+Facciamo l'esempio del player che si ferma quando cerca di muoversi contro un muro. In questo caso il movimento è un'azione mobile.move fatta nei confronti di un altro modello, tanto quanto damageable.damage era un'azione fatta nei confronti di un altro modello (il player). La differenza è che nella trappola il namespace dell'evento era il target, nel movimento è la source. Si possono unificare dicendo che nel caso del movimento l'evento è solid.push, con cui il player cerca di spingere un solid. Il muro risponde con un evento mobile.block sul player, che lo ferma.
+
+Dunque, in questo esempio il player (mobile) sente l'evento mobile.move in arrivo dal gioco (cioè dalla pressione dei tasti), cerca nella geografia chi si trova nella nuova posizione, e a questo punto deve decidere che evento lanciare a seconda della tipologia di modello. Questo però non va bene, perché è il modello target che deve sapere come rispondere ad un tentativo di movimento. In realtà, il componente mobile deve solo muoversi, non deve fare altri calcoli, quindi quello che potrebbe succedere è che l'evento mobile.move è intercettato da solid (il player è anche solid), il quale sa che non è detto che possa muoversi: dipende da chi c'è davanti. Allora solid chiede alla geografia chi c'è davanti, e se è un altro solid lancia un evento solid.push su quel target. In realtà la responsabilità di solid è di modellare la spinta degli oggetti, per cui questo evento viene intercettato da fixed (il muro è fixed oltre che solid), che risponde rilanciando un evento mobile.stop sul player.
+
+Il meccanismo allora è che un componente può essere registrato come interceptor di un altro, il che significa che intercetta un certo specifico evento tipico dell'altro componente. Ad esempio solid è configurato come interceptor di mobile per l'evento mobile.move. Questo significa che l'evento in questione non deve essere mandato a mobile, ma al suo interceptor. Questo ha senso se definiamo solid come la "corporeità", cioè il fatto che due modelli solidi non possano compenetrarsi. Siccome l'eventualità della compenetrazione ha senso solo nell'ottica del movimento, capiamo perché la solidità è un derivato della mobilità.
+
+In generale, sarà preferibile che gli intercettori non blocchino l'evento, cioè di default un evento intercettato prosegue dopo che sono state svolte le elaborazioni di tutti gli intercettori (si potrebbe usare una coda di listener con priorità). Se un intercettore ha bisogno di bloccare un evento, lancerà un evento apposito.
+
+
+****************************************************
+
+Il Solid non deve essere necessariamente Mobile, per l'importante ragione che se uno rimuove Mobile, dovrebbe rimuovere anche Solid, e questo non ha senso, perché se io immobilizzo un giocatore, quello non ha senso che diventi automaticamente anche incorporeo. Dunque un Solid può essere Mobile oppure no. A questo punto il Solid fa due cose: ascolta internamente Move, per convertirlo in un Push esterno, e ascolta i Push esterni. In questo secondo caso, se il Solid è anche Mobile, lancerà un Move esterno (che internamente darà luogo anche ad un Push esterno) per cercare di muoversi, mentre se Solid non è Mobile, genererà un Block esterno per bloccare chi lo stava spingendo. Questo non solo consente di togliere Mobile ad un Solid senza romperlo, ma rende anche inutile la presenza di Fixed, dato che un Fixed è qualunque modello non Mobile.
+
+In generale, tutte le azioni che si verificano devono essere notificate in broadcast, perché bisogna dare degli hook a qualunque componente presente in futuro per aggiungere funzionalità in risposta alle azioni. Ad esempio, potrebbe esserci un effetto ambientale (un'esplosione) che si verifica ogni volta che un modello si scontra contro un altro, indipendentemente da chi sono i modelli (oppure solo per certi modelli).
+
+
+L'evento deve essere lanciato da chi fa l'azione o da chi la subisce? O da entrambi? Lanciare un evento (interno ed esterno) serve a consentire a modelli esterni, o a componenti interni, di modificare quell'azione. Questo però significa che deve essere possibile modificare sia l'azione del modello attivo, sia quella del modello passivo. Questo però vale solo per i componenti: un componente deve poter modificare il modo in cui un modello si comporta quando sta svolgendo un'azione (ad esempio un mobile acquista la capacità di spingere), ma anche quando la sta subendo (un eroe che prende danni acquista la capacità di assorbirli). Dunque bisogna che vengano generati eventi interni sia quando si lancia un evento esterno, sia quando lo si riceve. Si potrebbe allora introdurre il decoratore @reaction da attaccare ai listener per estenderne il comportamento. Non dimentircarsi di gestire la priorità negli eventi interni, dando maggiore importanza agli eventi dei componenti messi dopo, che sovrascrivono quelli dei componenti messi prima.
+
+In realtà l'evento esterno viene usato per reagire alle attività di un modello. L'evento interno serve a consentire ad un componente di aggiungere qualcosa alle attività di un altro. Dunque, anche se internamente si tratta in entrambi i casi di eventi, sarebbe meglio presentare gli eventi interni come un meccanismo di comunicazione, o di notifica, e dargli un'interfaccia nettamente diversa da quella dei dispatcher, in modo che sia chiaro che sono due cose diverse.
+
+Bisogna uniformare la comunicazione tra modelli. Da una parte si possono usare tutti eventi generici, ed ogni modello ascolta l'evento e controlla se lui è interessato. Dall'altra la comunicazione avviene direttamente sui modelli interessati, e loro si arrangiano a lanciare l'evento nell'action.
+
+Ogni action lancia un evento
+
+A = action
+E = event
+S = signal
+X = extension
+R = reactor
+-> lancia un evento
+-* signal->extension
+
+[A]mobile.move -> [E]mobile.move
+  [S]mobile.move
+    |
+    *
+  [X]solid.move (si registra automaticamente dato il nome, o con un decorator?)
+    [A]solid.push -> [E]solid.push
+			|
+			*
+		      [R]solid.push
+			[A]mobile.move
+
+player.move
+  event.Move
+    "player MOVE"
+  signal.Move
+    solid.extension.Move
+      player.push
+	event.Push
+	  "player PUSH"
+	  ball.reactor.Push
+	    "ball GOT PUSHED"
+	    ball.move
+	      event.Move
+		"ball MOVE"
+	      signal.Move
+		solid.extension.Move
+		  ball.push
+		    event.Push
+		      "ball PUSH"
+		      wall.reactor.Push
+			"wall GOT PUSHED"
+		    signal.Push
+		  "ball INSIDE PUSH"
+	    "ball INSIDE MOVE"
+	signal.Push
+      "player INSIDE PUSH"
+"player INSIDE MOVE"
+
+In realtà il caso di modello che comunica con un singolo altro modello è molto particolare, e non dovrebbe essere implementato come variante dell'interfaccia. Nel caso generale quello che fa un modello ne interessa molti altri, basta pensare al caso di modello solido il cui corpo occupa più di un quadretto, che quando si muove spinge contemporaneamente due modelli (effetto "ruspa"). In questo caso anche il push deve interessare più di un modello. Dunque, ha senso evitare che un'azione debba domandarsi qual'è il modello interessato, perché in generale ce n'è più di uno, e ha senso semplicemente lanciare l'evento, e lasciare che sia ciascun modello interessato a reagire di conseguenza.
+
+Il punto non è bloccare un evento, ma modificarne il comportamento. Se voglio bloccare un modello, modificherò il suo move in modo che si sposti di zero. Se metto un'armatura ad un modello, quella diminuirà il danno inflitto di un certo tot.
+
+Gli eventi che vengono salvati sono talvolta originati dallo stesso model, talvolta arrivano da model esterni in seguito a reazioni. Sarebbe il caso di distinguerli in modo da non generare ambiguità.
